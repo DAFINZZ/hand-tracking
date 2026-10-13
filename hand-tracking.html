@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>✨ Hand Tracking Particle Effect</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #000; font-family: 'Poppins', sans-serif; }
+    #webcam { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; object-fit: cover; transform: scaleX(-1); z-index: 0; opacity: 0.6; }
+    #canvas { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 1; }
+    .hud { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 10; color: #00ffc8; font-size: 14px; background: rgba(0,0,0,0.7); padding: 10px 24px; border-radius: 30px; border: 1px solid rgba(0,255,200,0.3); backdrop-filter: blur(10px); }
+    .hud span { color: #fff; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <video id="webcam" autoplay playsinline muted></video>
+  <canvas id="canvas"></canvas>
+  <div class="hud">🖐️ <span id="status">Memuat model...</span></div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.158.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.158.0/examples/jsm/",
+        "@mediapipe/tasks-vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0"
+      }
+    }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
+
+    // ==== SETUP THREE.JS SCENE ====
+    const canvas = document.getElementById('canvas');
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.z = 5;
+
+    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+    // ==== PARTICLES ====
+    const particleCount = 800;
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(particleCount * 3);
+    const colors = new Float32Array(particleCount * 3);
+    const sizes = new Float32Array(particleCount);
+
+    for (let i = 0; i < particleCount; i++) {
+      positions[i * 3] = (Math.random() - 0.5) * 10;
+      positions[i * 3 + 1] = (Math.random() - 0.5) * 10;
+      positions[i * 3 + 2] = (Math.random() - 0.5) * 5;
+      
+      const color = new THREE.Color().setHSL(Math.random() * 0.2 + 0.5, 1, 0.6);
+      colors[i * 3] = color.r;
+      colors[i * 3 + 1] = color.g;
+      colors[i * 3 + 2] = color.b;
+      
+      sizes[i] = Math.random() * 0.1 + 0.02;
+    }
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+
+    const material = new THREE.ShaderMaterial({
+      uniforms: { time: { value: 0 } },
+      vertexShader: `
+        attribute float size;
+        varying vec3 vColor;
+        void main() {
+          vColor = color;
+          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = size * (300.0 / -mvPosition.z);
+          gl_Position = projectionMatrix * mvPosition;
+        }
+      `,
+      fragmentShader: `
+        varying vec3 vColor;
+        void main() {
+          vec2 cxy = 2.0 * gl_PointCoord - 1.0;
+          float r = dot(cxy, cxy);
+          if (r > 1.0) discard;
+          float alpha = (1.0 - r) * 0.8;
+          gl_FragColor = vec4(vColor, alpha);
+        }
+      `,
+      transparent: true,
+      vertexColors: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+
+    const particles = new THREE.Points(geometry, material);
+    scene.add(particles);
+
+    // ==== MEDIAPIPE HAND TRACKING ====
+    const video = document.getElementById('webcam');
+    const statusText = document.getElementById('status');
+    let handLandmarker = null;
+    let lastVideoTime = -1;
+    let smoothedX = 0.5, smoothedY = 0.5;
+
+    async function initHandLandmarker() {
+      try {
+        const vision = await FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm"
+        );
+        handLandmarker = await HandLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+            delegate: "GPU"
+          },
+          runningMode: "VIDEO",
+          numHands: 1,
+          minHandDetectionConfidence: 0.5,
+          minHandPresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5
+        });
+        statusText.textContent = "Siap! Tunjukkan tanganmu ✨";
+        console.log('✅ MediaPipe Hand Landmarker siap');
+      } catch (error) {
+        console.error('❌ Gagal memuat model:', error);
+        statusText.textContent = "Gagal memuat model";
+      }
+    }
+
+    async function startCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 640, height: 480, facingMode: "user" },
+          audio: false
+        });
+        video.srcObject = stream;
+        await video.play();
+        console.log('🎥 Kamera aktif');
+      } catch (error) {
+        console.error('❌ Gagal akses kamera:', error);
+        statusText.textContent = "Gagal akses kamera";
+      }
+    }
+
+    // ==== ANIMATION LOOP ====
+    const clock = new THREE.Clock();
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const time = clock.getElapsedTime();
+      material.uniforms.time.value = time;
+
+      // Update particle positions based on hand tracking
+      if (handLandmarker && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+        lastVideoTime = video.currentTime;
+        const results = handLandmarker.detectForVideo(video, performance.now());
+
+        if (results.landmarks && results.landmarks.length > 0) {
+          // Ambil titik tengah telapak tangan (landmark index 9)
+          const palm = results.landmarks[0][9];
+          
+          // Smoothing untuk pergerakan yang lebih halus
+          smoothedX += ((1 - palm.x) - smoothedX) * 0.15;
+          smoothedY += (palm.y - smoothedY) * 0.15;
+          
+          // Konversi ke koordinat Three.js
+          const targetX = (smoothedX - 0.5) * 6;
+          const targetY = -(smoothedY - 0.5) * 4;
+          
+          // Gerakkan partikel
+          const posAttr = geometry.attributes.position;
+          for (let i = 0; i < particleCount; i++) {
+            const ix = i * 3;
+            const baseX = positions[ix];
+            const baseY = positions[ix + 1];
+            const baseZ = positions[ix + 2];
+            
+            // Partikel tertarik ke posisi tangan
+            posAttr.array[ix] += (targetX + baseX * 0.3 - posAttr.array[ix]) * 0.02;
+            posAttr.array[ix + 1] += (targetY + baseY * 0.3 - posAttr.array[ix + 1]) * 0.02;
+            posAttr.array[ix + 2] += (baseZ * 0.5 - posAttr.array[ix + 2]) * 0.02;
+          }
+          posAttr.needsUpdate = true;
+          
+          statusText.textContent = "✨ Partikel mengikuti tanganmu!";
+        } else {
+          statusText.textContent = "🖐️ Tunjukkan tanganmu...";
+        }
+      }
+
+      // Rotasi partikel
+      particles.rotation.y = time * 0.05;
+      
+      renderer.render(scene, camera);
+    }
+
+    // ==== RESIZE HANDLER ====
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // ==== INIT ====
+    (async () => {
+      await startCamera();
+      await initHandLandmarker();
+      animate();
+    })();
+
+    console.log('✨ Hand Tracking Particle Effect');
+    console.log('🔥 Gerakkan tanganmu untuk mengontrol partikel!');
+  </script>
+</body>
+</html>
